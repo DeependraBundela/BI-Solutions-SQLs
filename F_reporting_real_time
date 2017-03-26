@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+import snowflake.connector
+import os
+
+# Setting your account information
+ACCOUNT = 'account'
+USER = 'snowflake'
+PASSWORD = 'password'
+
+# Connecting to the Snowflake DB
+cnx = snowflake.connector.connect(
+  user=USER,
+  password=PASSWORD,
+  account=ACCOUNT,
+)
+
+# Using Database, Schema and Warehouse
+cnx.cursor().execute("USE warehouse APP01_WH;")
+cnx.cursor().execute("USE database FREE_Reporting;")
+cnx.cursor().execute("USE schema DBO;")
+
+query = """
+CREATE OR REPLACE TRANSIENT TABLE stage.Freedom_TBE_Current_Update AS (
+SELECT
+    t.ResNum,
+    t.RecordType,
+    b.ResponseDate,
+    b.Duration,
+    CASE WHEN b.ResNum IS NOT NULL THEN 1 ELSE 0 END as BilledResponse,
+    CASE WHEN b.ResNum IS NOT NULL THEN 1 ELSE 0 END as Response,
+    DATEDIFF(d, t.DateMailed, b.ResponseDate) as DaysRespond,
+    COUNT(1) AS TotalResponses
+FROM
+    dbo.Freedom_TBE_Current t
+JOIN
+    dbo.RES_Ivr b ON b.ResNum = t.ResNum AND b.ResponseType = t.RecordType AND b.BillCode = 'B'
+JOIN
+    dbo.RES_Ivr ttl ON ttl.ResNum = b.ResNum AND ttl.ResponseType = b.ResponseType
+WHERE
+    b.ResponseDate >= DATEADD('day',-2,CURRENT_DATE())
+GROUP BY
+    t.ResNum,
+    t.RecordType,
+    b.ResponseDate,
+    b.Duration,
+    CASE WHEN b.ResNum IS NOT NULL THEN 1 ELSE 0 END,
+    DATEDIFF(d, t.DateMailed, b.ResponseDate) 
+);
+"""
+cnx.cursor().execute(query)
+
+query = """
+UPDATE 
+    dbo.Freedom_TBE_Current tbe
+SET
+    tbe.ResponseDate = res.ResponseDate,
+    tbe.Duration = res.Duration,
+    tbe.BilledResponse= res.BilledResponse,
+    tbe.Response = res.Response,
+    tbe.DaysRespond = res.DaysRespond,
+    tbe.TotalResponses = res.TotalResponses
+FROM
+    stage.Freedom_TBE_Current_Update res
+WHERE
+    tbe.ResNum = res.ResNum
+    AND tbe.RecordType = res.RecordType
+    AND tbe.TotalResponses != res.TotalResponses;
+"""
+cnx.cursor().execute(query)
+
+query = """DROP TABLE stage.Freedom_TBE_Current_Update;"""
+cnx.cursor().execute(query)
+
+query = """
+INSERT INTO DBO.FREEDOM_IMBTRACKING
+  SELECT 
+    rm.DropNumber,
+    rm.DateMailed,
+    rm.ResNum as RecordResnum,
+    rm.Offer,
+    rm.Campaign,
+    rm.City,
+    rm.State,
+    rm.Zip,
+    rm.ImbDigits,
+    b.*
+  FROM 
+    (SELECT * FROM DBO.RECORDSMAILED a WHERE EXISTS (SELECT 1 FROM DBO.SCN_FREEDOM s WHERE s.ResNum = a.Resnum AND s.ImbDigits = a.ImbDigits AND s.ScanTime >= DATEADD('day',-2,CURRENT_DATE()))) rm
+  JOIN 
+    DBO.SCN_Freedom b ON b.ResNum = rm.ResNum AND b.ImbDigits = rm.ImbDigits
+  WHERE
+    NOT EXISTS(SELECT 1 FROM DBO.FREEDOM_IMBTRACKING t WHERE t.RecordResnum = rm.ResNum AND IFNULL(t.RecordImbDigits,'') = IFNULL(rm.ImbDigits,'') AND IFNULL(t.ScanId,'') = IFNULL(b.ScanId,''));
+"""
+cnx.cursor().execute(query)
