@@ -1,0 +1,777 @@
+#!/usr/bin/env python
+import snowflake.connector
+import os
+
+# Setting your account information
+ACCOUNT = 'account'
+USER = 'username'
+PASSWORD = 'password'
+
+# Connecting to the Snowflake DB
+cnx = snowflake.connector.connect(
+  user=USER,
+  password=PASSWORD,
+  account=ACCOUNT,
+)
+
+# Using Database, Schema and Warehouse
+cnx.cursor().execute("USE warehouse APP01_WH;")
+cnx.cursor().execute("USE database FREE_Reporting;")
+cnx.cursor().execute("USE schema DBO;")
+
+query = """
+  INSERT INTO DBO.SCORES
+  SELECT
+    CLIENTID,
+    TRANZACTID,
+    CREDITSEQ,
+    CRA,
+    FILENAME,
+    LOANTYPE,
+    ZIP,
+    FICOV3BASE,
+    FREE_FSL_1001A_S0001_SCORE,
+    FREE_FSL_1001A_S0001_DECILE,
+    FREE_FSL_1002A_S0001_SCORE,
+    FREE_FSL_1002A_S0001_DECILE,
+    FREE_VSL_1001A_S0001_SCORE,
+    FREE_VSL_1001A_S0001_DECILE,
+    ROW_NUMBER() OVER( PARTITION BY ClientId ORDER BY CASE WHEN LOANTYPE = 'STML' THEN 1 ELSE 0 END DESC, COALESCE(FREE_FSL_1002A_S0001_DECILE,FREE_FSL_1001A_S0001_DECILE,FREE_VSL_1001A_S0001_DECILE) ASC ) AS DECILEINDEX,
+    FREE_VCO_1001A_S0001_SCORE,
+    FREE_VCO_1001A_S0001_DECILE,
+    FREE_VCO_1002A_S0001_SCORE,
+    FREE_VCO_1002A_S0001_DECILE,
+    FREE_FCO_1002A_S0001_SCORE,
+    FREE_FCO_1002A_S0001_DECILE,
+    ROW_NUMBER() OVER( PARTITION BY ClientId ORDER BY CASE WHEN LOANTYPE = 'CONV' THEN 1 ELSE 0 END DESC, COALESCE(FREE_FCO_1002A_S0001_DECILE,FREE_VCO_1002A_S0001_DECILE,FREE_VCO_1001A_S0001_DECILE) ASC ) AS CODECILEINDEX
+  FROM
+  (
+    SELECT
+      s1.CLIENTID,
+      s1.TRANZACTID,
+      s1.CREDITSEQ,
+      s1.CRA,
+      s1.FILENAME,
+      s1.LOANTYPE,
+      s1.ZIP,
+      s1.FICOV3BASE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_FSL_1001A_S0001' THEN s1.SCORE END) AS FREE_FSL_1001A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_FSL_1001A_S0001' THEN s1.DECILE END) AS FREE_FSL_1001A_S0001_DECILE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_FSL_1002A_S0001' THEN s1.SCORE END) AS FREE_FSL_1002A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_FSL_1002A_S0001' THEN s1.DECILE END) AS FREE_FSL_1002A_S0001_DECILE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_VSL_1001A_S0001' THEN s1.SCORE END) AS FREE_VSL_1001A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_VSL_1001A_S0001' THEN s1.DECILE END) AS FREE_VSL_1001A_S0001_DECILE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_VCO_1001A_S0001' THEN s1.SCORE END) AS FREE_VCO_1001A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_VCO_1001A_S0001' THEN s1.DECILE END) AS FREE_VCO_1001A_S0001_DECILE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_VCO_1002A_S0001' THEN s1.SCORE END) AS FREE_VCO_1002A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_VCO_1002A_S0001' THEN s1.DECILE END) AS FREE_VCO_1002A_S0001_DECILE,
+      MAX(CASE WHEN s1.MODEL = 'FREE_FCO_1002A_S0001' THEN s1.SCORE END) AS FREE_FCO_1002A_S0001_SCORE,
+      MIN(CASE WHEN s1.MODEL = 'FREE_FCO_1002A_S0001' THEN s1.DECILE END) AS FREE_FCO_1002A_S0001_DECILE
+    FROM
+    (
+      SELECT
+        t.CLIENTID,
+        s.TRANZACTID,
+        s.CREDITSEQ,
+        s.CRA,
+        s.FILENAME,
+        s.LOANTYPE,
+        s.ZIP,
+        s.FICOV3BASE,
+        UPPER(REPLACE(REPLACE(REPLACE(SUBSTRING(s.MODEL,0,LENGTH(s.MODEL)-CHARINDEX('_',REVERSE(s.MODEL))),'_EQ_','_'),'_EX_','_'),'_TU_','_')) AS MODEL,
+        s.SCORE,
+        d.DECILE
+      FROM
+        DBO.RECORDSMAILED t
+      JOIN
+        NOID.DBO.SCORE s ON s.TRANZACTID = t.TRANZACTID AND TO_VARCHAR(s.CREDITSEQ) = t.CREDITSEQ AND s.CRA = t.CRA AND s.FicoV3Base = t.FicoV3Base
+      JOIN
+        NOID.DBO.DECILE d ON d.SCOREID = s.SCOREID
+    ) s1
+  WHERE
+    --Append new ClientIds only, do not replace prior
+    NOT EXISTS (SELECT 1 FROM DBO.SCORES ts WHERE ts.ClientId = s1.ClientId)
+    --STML models only
+    AND s1.MODEL IN ('FREE_FSL_1001A_S0001','FREE_FSL_1002A_S0001','FREE_VSL_1001A_S0001','FREE_VCO_1001A_S0001','FREE_VCO_1002A_S0001','FREE_FCO_1002A_S0001')
+  GROUP BY
+    s1.CLIENTID,
+    s1.TRANZACTID,
+    s1.CREDITSEQ,
+    s1.CRA,
+    s1.FILENAME,
+    s1.LOANTYPE,
+    s1.ZIP,
+    s1.FICOV3BASE
+  ) s2
+;
+"""
+cnx.cursor().execute(query)
+
+query = """
+CREATE OR REPLACE TABLE dbo.Freedom_TBE_Current AS 
+	(
+		SELECT
+			Mkt_Value,
+			applicationdate,
+			mtg33,
+			custom01,
+			Amg08plus,
+			Responsedate,
+			matchtype,
+			Duration,
+			ClientId,
+			LoanAmount,
+			IFNULL(City,'') AS City,
+			IFNULL(State,'') AS State,
+			ResNum,
+			NULLIF(Cra,'') AS Cra,
+			Fico,
+			IFNULL(Gender,0) AS Gender,
+			mtg_rate,
+			mtg_term,
+			mtg31,
+			Mtg_Balance,
+			Revolving_Debt,
+			age,
+			LOR,
+			ed,
+			homebuildyear,
+			NULLIF(income,'') AS income,
+			IFNULL(maritalstat,0) AS maritalstat,
+			LTV,
+			hisp_flag,
+			DateMailed,
+			DropNumber,
+			Offer,
+			Campaign,
+			Segment,
+			NULLIF(AprPrinted,'') AS AprPrinted,
+			Veteran_HH_Flag,
+			RecordType,
+			Gate60,
+			Application60,
+			Fund60,
+			Gate90,
+			Application90,
+			Fund90,
+			Gate90plus,
+			Application90plus,
+			Fund90plus,
+			Active,
+			Program,
+			NULLIF(Creative,'') AS Creative,
+			BilledResponse,
+			Response,
+			TotalResponses,
+			DaysLogic,
+			DaysRespond,
+			DaysApplication,
+			DaysFunded,
+			DPB,
+			SCF,
+			Bullet,
+			Xtra01,
+			Postcard,
+			TranzactId,
+			CreditSeq,
+			LoanType,
+			MTGDATE,
+			CASE 
+				WHEN IFNULL(Age,0) <= 19 THEN 19
+				WHEN AGE >= 100 THEN 100
+				ELSE Age
+			END AS Age_Range,
+			CASE WHEN IFNULL(Duration,0) = 0 THEN 0 ELSE 1 END AS Call_Flag,
+			CASE 
+				WHEN DAY(DateMailed) <=7 THEN 'Week 1'
+				WHEN DAY(DateMailed) <=14 THEN 'Week 2'
+				WHEN DAY(DateMailed) <=21 THEN 'Week 3'
+				WHEN DAY(DateMailed) <=28 THEN 'Week 4'
+			ELSE 'Week 5'
+			END AS Mailed_Week_of_Month,
+			CASE 
+				WHEN DAY(Responsedate) <=7 THEN 'Week 1'
+				WHEN DAY(Responsedate) <=14 THEN 'Week 2'
+				WHEN DAY(Responsedate) <=21 THEN 'Week 3'
+				WHEN DAY(Responsedate) <=28 THEN 'Week 4'
+			ELSE 'Week 5'
+			END AS Responded_Week_of_Month,
+			CASE 
+				WHEN Fico < 580 THEN '580 <'
+				WHEN Fico <= 599 THEN '580-599'
+				WHEN Fico <= 619 THEN '600-619'
+				WHEN Fico <= 639 THEN '620-639'
+				WHEN Fico <= 659 THEN '640-659'
+				WHEN Fico <= 679 THEN '660-679'
+				WHEN Fico <= 689 THEN '680-689'
+				WHEN Fico <= 719 THEN '700-719'
+				WHEN Fico <= 739 THEN '720-739'
+				WHEN Fico>=740 THEN '740+'
+				ELSE 'N/A'
+			END AS Fico_Range,
+			CASE 
+				WHEN UPPER(Campaign) LIKE '%PHONE%' Then 'Phone'
+				WHEN UPPER(Campaign) LIKE '%EMAIL%' Then 'Email'
+				ELSE 'Mail' 
+			END AS Campaign_Type,
+			CASE WHEN UPPER(Campaign) LIKE '%ITA%' THEN 'ITA' ELSE 'Pre Approved' END AS ITA_Pre_Approved,
+			CASE 
+				WHEN LTV < 10 THEN '0-9'
+				WHEN LTV < 20 THEN '10-19'
+				WHEN LTV < 30 THEN '20-29'
+				WHEN LTV < 40 THEN '30-39'
+				WHEN LTV < 50 THEN '40-49'
+				WHEN LTV < 60 THEN '50-59'
+				WHEN LTV < 70 THEN '60-69'
+				WHEN LTV < 80 THEN '70-79'
+				WHEN LTV < 90 THEN '80-89'
+				WHEN LTV < 100 THEN '90-99'
+				ELSE '100+'
+			END AS LTV_Range,
+			CASE WHEN Offer LIKE 'FD^_%' ESCAPE '^' THEN 'Portfolio' ELSE 'Acquisition' END AS Portfolio_Acquisition,
+			CASE
+				WHEN UPPER(Segment) LIKE 'FD.%' THEN 'PORTFOLIO'
+				WHEN UPPER(Segment) LIKE '%FIF05' THEN '005'
+				WHEN UPPER(Segment) LIKE '%NOID' THEN 'NOSEGMENT'
+				WHEN UPPER(Segment) LIKE '%NOID%' THEN LPAD(SUBSTRING(Segment, CHARINDEX('NOID',UPPER(Segment))+4, LENGTH(Segment)),3,'0')
+				ELSE LPAD(LEFT(SUBSTRING(Segment, CHARINDEX('_', Segment)+1, LENGTH(Segment)),3),3,'0')
+			END AS Segment_Parsed,
+			CASE 
+				WHEN 
+  				UPPER(Campaign) LIKE '%STM%' OR
+  				UPPER(Campaign) LIKE '%STRML%' OR
+  				UPPER(Campaign) LIKE '%SL%' OR 
+  				UPPER(Campaign) IN ('DM.COM FHA EST MTH SVGS','DM.COM FHA SVGS PC')
+				THEN 'STML'
+				ELSE 'FULLDOC'
+			END AS STML_FULLDOC,
+			CASE WHEN Campaign LIKE '%VA%' THEN 'VA' ELSE 'FHA' END AS VA_FHA,
+			CASE 
+				WHEN 
+					UPPER(Campaign) LIKE '%CASH%' OR
+					UPPER(Campaign) LIKE '% CO %' OR
+					UPPER(Campaign) LIKE '%VCO%' OR
+					UPPER(Campaign) LIKE '%FCO%' OR
+					UPPER(Campaign) LIKE '%FHA HOME VALUE%' OR
+					UPPER(Campaign) LIKE '%VA BENEFIT INFORMATION%'
+				THEN 'Cashout'
+				WHEN 
+					UPPER(Campaign) LIKE '%OCWEN%' OR
+					UPPER(Campaign) LIKE '%PINGORA%'
+				THEN 'JMA'
+				ELSE 'Acq & Port'
+			END AS Vertical,
+			--OfferPreviewHash,
+			amg13,
+			INITIAL_DISCLOSURE_COMPLETE,
+			ClosingDate,
+			FileName,
+			LeadSource,
+			LeadId,
+			LeadDate,
+			CASE WHEN Response=1 OR Application60=1 OR gate60=1 OR Fund60=1 THEN 1 ELSE 0 END AS ResponseD,
+			CASE WHEN Application60=1 OR gate60=1 OR Fund60=1 THEN 1 ELSE 0 END AS Application60D,
+			CASE WHEN gate60=1 OR Fund60=1 THEN 1 ELSE 0 END AS Gate60D,
+			FREE_FSL_1001A_S0001_decile,
+			FREE_FSL_1002a_S0001_decile,
+			FREE_VSL_1001A_S0001_decile,
+			FREE_VCO_1001A_S0001_DECILE,
+			FREE_VCO_1002A_S0001_DECILE,
+			FREE_FCO_1002A_S0001_DECILE,
+			ActualDateMailed,
+			Preferred_Description,
+			DWELTYPE,
+			INCOMERANGE,
+			INTERESTRATE,
+			EQUITY03,
+			EQUITY06,
+			EQUITY14,
+			ZIP,
+			equity08,
+			equity10,
+			equity13,
+			PAYMENT,
+			Payment1000,
+			Months,
+			Years,
+			Mtg_amount,
+			mtgClosed,
+			amg08,
+			DTI,
+			CustomerId,
+			IMBSERVICETYPE,
+			firstname,
+			lastname,
+			IMBDIGITS,
+			"21",
+			"22"
+		FROM
+			(
+				SELECT
+					a.prm02 AS Mkt_Value,
+					g.ApplicationDate,
+					a.amg34 AS mtg33,
+					a.custom01,
+					a.Amg08plus,
+					d.Responsedate,
+					g.matchtype,
+					d.Duration,
+					a.ClientId,
+					g.LoanAmount,
+					a.City,
+					a.State,
+					a.ResNum,
+					a.Cra,
+					a.FicoV3Base AS Fico,
+					a.Gender,
+					a.mtg_rate,
+					a.mtg_term,
+					a.amg32 AS mtg31,
+					a.amg08 AS Mtg_Balance,
+					a.arv16 AS Revolving_Debt,
+					a.dem02 AS age,
+					a.dem05 AS LOR,
+					a.ed,
+					a.homebuildyear,
+					a.income,
+					a.maritalstat,
+					a.prm03 AS LTV,
+					a.hisp_flag,
+					CAST(CASE WHEN LENGTH(SPLIT_PART(a.DateMailed,'/',-1)) = 2 THEN SPLIT_PART(a.DateMailed,'/',1)||'/'||SPLIT_PART(a.DateMailed,'/',2)||'/20'||SPLIT_PART(a.DateMailed,'/',3) ELSE a.DateMailed END AS DATE) AS DateMailed,
+					a.DropNumber,
+					a.Offer,
+					a.Campaign,
+					a.Class AS Segment,
+					a.Apr AS AprPrinted,
+					a.Veteran_HH_Flag,
+					a.RecordType,
+					a.DPB,
+					a.SCF,
+					a.Bullet,
+					a.Xtra01,
+					a.Postcard,
+					a.TranzactId,
+					a.CreditSeq,
+					a.LoanType,
+					a.MTGDATE,
+					CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL  AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=60)) THEN 1 ELSE 0 END as Gate60,
+					CASE WHEN g.ApplicationDate IS NOT NULL AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=60))THEN 1 ELSE 0 END as Application60,
+					CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=60))THEN 1 ELSE 0 END as Fund60,
+					CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL  AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=90  )) THEN 1 ELSE 0 END as Gate90,
+					CASE WHEN g.ApplicationDate IS NOT NULL AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=90))THEN 1 ELSE 0 END as Application90,
+					CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=90))THEN 1 ELSE 0 END as Fund90,
+					CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL THEN 1 ELSE 0 END as Gate90plus,
+					CASE WHEN g.ApplicationDate IS NOT NULL THEN 1 ELSE 0 END as Application90plus,
+					CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) THEN 1 ELSE 0 END as Fund90plus,
+					CASE WHEN (g.StatusNum BETWEEN 11 AND 57) AND (g.StatusNum != 55) THEN 1 ELSE 0 END as Active,
+					SUBSTRING(a.Offer, 1, 4) AS Program,
+					SUBSTRING(a.Offer, 7, 3) AS Creative,
+					CASE WHEN d.ResNum IS NOT NULL THEN 1 ELSE 0 END AS BilledResponse,
+					CASE WHEN d.ResNum IS NOT NULL THEN 1 ELSE 0 END AS Response,
+					CASE WHEN d.ResNum IS NOT NULL THEN TotalResponses ELSE 0 END AS TotalResponses,
+					DATEDIFF(d, CAST(a.DateMailed AS DATE), g.ApplicationDate) AS DaysLogic,
+					DATEDIFF(d, CAST(a.DateMailed AS DATE), d.ResponseDate) AS DaysRespond,
+					DATEDIFF(d, d.ResponseDate, g.ApplicationDate) AS DaysApplication,
+					DATEDIFF(d, g.ApplicationDate, g.ClosingDate) AS DaysFunded,
+					--RTRIM(LTRIM(CONVERT(NVARCHAR(64),HashBytes('SHA2_256', 'TESTOFFER1234' + '68b1282b91de2c054c36629cb8dd447f12f096d3e3c587978dc2248444633483'),2))) AS OfferPreviewHash,
+					a.amg13,
+					g.INITIAL_DISCLOSURE_COMPLETE,
+					g.ClosingDate,
+					a.FileName,
+					g.LeadSource,
+					g.LeadId,
+					g.LeadDate,
+					s.FREE_FSL_1001A_S0001_decile,
+					s.FREE_FSL_1002a_S0001_decile,
+					s.FREE_VSL_1001A_S0001_decile,
+					cos.FREE_VCO_1001A_S0001_DECILE,
+					cos.FREE_VCO_1002A_S0001_DECILE,
+					cos.FREE_FCO_1002A_S0001_DECILE,
+					pd.ActualDateMailed,
+					pd.Preferred_Description,
+					a.DWELTYPE,
+                                        a.INCOMERANGE,
+                                        a.INTERESTRATE,
+                                        a.EQUITY03,
+                                        a.EQUITY06,
+                                        a.EQUITY14,
+                                        a.ZIP,
+                                        a.aeq08 as equity08,
+                                        a.aeq10 as equity10,
+                                        a.aeq13 as equity13,
+                                        a.PAYMENT,
+                                        a.Payment1000,
+                                        a.Months,
+                                        a.Years,
+                                        a.Mtg_amount,
+                                        a.mtgClosed,
+                                        a.amg08,
+                                        a.DTI,
+                                        g.CustomerId,
+                                        a.IMBSERVICETYPE,
+                                        a.firstname,
+                                        a.lastname,
+                                        a.IMBDIGITS,
+                                        a.X21 AS "21",
+                                        a.X22 AS "22"
+				FROM 
+					dbo.RecordsMailed a
+				LEFT JOIN
+					dbo.RES_Ivr d ON a.ResNum = d.ResNum AND a.RecordType = d.ResponseType AND UPPER(d.billcode) = 'B'
+				LEFT JOIN 
+					(	SELECT
+							ResNum,
+							ResponseType AS RecordType,
+							matchtype,
+							LoanAmount,
+							CurrentStatus,
+							StatusNum,
+							CAST(SUBSTRING(ApplicationDate,6,4) AS INT) AS ApplicationYear,
+							CASE WHEN ApplicationDate = '' THEN NULL ELSE CAST(LEFT(ApplicationDate,2)||'-'||SUBSTRING(ApplicationDate,3,3)||'-'||SUBSTRING(ApplicationDate,6,4) AS DATE) END AS ApplicationDate,
+							CASE WHEN ClosingDate = '' THEN NULL ELSE CAST(LEFT(ClosingDate,2)||'-'||SUBSTRING(ClosingDate,3,3)||'-'||SUBSTRING(ClosingDate,6,4) AS DATE) END AS ClosingDate,
+                                                        CASE WHEN INITIAL_DISCLOSURE_COMPLETE IN ('.','') THEN NULL ELSE
+                                                                CAST(
+                                                                  CAST(LEFT(INITIAL_DISCLOSURE_COMPLETE,2)||'-'||SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,3,3)||'-'||SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,6,4) AS DATE)
+                                                                  ||' '||CAST(SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,11,LENGTH(INITIAL_DISCLOSURE_COMPLETE)) AS TIME)
+                                                                 AS TIMESTAMP)
+                                                        END AS INITIAL_DISCLOSURE_COMPLETE,
+							LeadSource,
+							LeadId,
+                                                        CASE WHEN LeadDate = '' THEN NULL ELSE
+                                                                CAST(
+                                                                  CAST(LEFT(LeadDate,2)||'-'||SUBSTRING(LeadDate,3,3)||'-'||SUBSTRING(LeadDate,6,4) AS DATE)
+                                                                  ||' '||CAST(SUBSTRING(LeadDate,11,LENGTH(LeadDate)) AS TIME)
+                                                                 AS TIMESTAMP)
+                                                        END AS LeadDate,
+                                                        CustomerId
+						FROM
+							dbo.Applications
+					) g on a.ResNum = g.ResNum AND a.RecordType = g.RecordType AND g.ApplicationYear >= 2015
+				LEFT JOIN 
+					(	SELECT 
+							ResNum, 
+							ResponseType AS RecordType, 
+							COUNT(1) as TotalResponses 
+						FROM 
+							dbo.RES_Ivr 
+						GROUP BY 
+							ResNum, 
+							ResponseType 
+					) e on a.ResNum = e.ResNum AND a.RecordType = e.RecordType
+                                LEFT JOIN
+                                        DBO.SCORES s ON s.ClientId = a.ClientId AND s.DECILEINDEX = 1
+                                LEFT JOIN
+                                        DBO.SCORES cos ON cos.ClientId = a.ClientId AND cos.CODECILEINDEX = 1
+                                LEFT JOIN
+                                        dbo.Preferred_Description pd ON pd.DropNumber = a.DropNumber AND pd.Campaign = a.Campaign AND pd.Postcard = a.Postcard AND pd.Offer = a.Offer
+                                WHERE 
+                                        a.DropNumber >= 815
+			) t
+	);
+"""
+cnx.cursor().execute(query)
+
+query = """GRANT SELECT ON ALL TABLES IN SCHEMA FREE_REPORTING.DBO TO ROLE PUBLIC;"""
+cnx.cursor().execute(query)
+
+query = """
+CREATE OR REPLACE TABLE dbo.Freedom_TBE_Current_All AS (
+		SELECT
+			g.INITIAL_DISCLOSURE_COMPLETE,
+			g.matchtype,
+			g.ApplicationDate,
+			g.closingDate,
+			a.FirstName,
+			a.LastName,
+			a.ImbServiceType,
+			a.ImbDigits,
+			d.Duration,
+			a.ClientId,
+			d.Responsedate,
+			a.Addr1 AS Address1,
+			a.Addr2 AS Address2,
+			a.AddrLine1,
+			a.AddrLine2,
+			g.LoanAmount,
+			a.City,
+			a.State,
+			a.Zip,
+			a.ResNum,
+			a.TranzactId AS OrderRecordId,
+			a.CreditSeq AS Pin,
+			a.Cra,
+			a.FileName,
+			a.FileDate,
+			a.FicoV3Base AS Fico,
+			a.TzResponder AS Responses,
+			a.Gender,
+			a.HouseholdRank AS HHIND,
+			a.custom01,
+			a.aal02 AS all02,
+			a.aal06 AS all06,
+			a.aal14 AS all14,
+			a.all15,
+			a.aal16 AS all16,
+			a.aal20 AS all20,
+			a.aal26 AS all26,
+			a.aal27 AS all27,
+			a.aal31 AS all31,
+			a.aal34 AS all34,
+			a.aau13 AS auto13,
+			a.mtg62,
+			a.aeq08 AS equity08,
+			a.aeq10 AS equity10,
+			a.aeq13 AS equity13,
+			a.amg03 AS mtg03,
+			a.amg08 AS Mtg_Balance,
+			a.amg10 AS mtg10,
+			a.amg12 AS PurchDt,
+			a.amg13 AS mtg13,
+			a.amg15 AS mtg15,
+			a.arv16 AS Revolving_Debt,
+			a.auto08,
+			a.auto31,
+			a.AVAILHE,
+			a.bc16,
+			a.bc37,
+			a.bk_plus AS bk_plus_score,
+			a.cderog01,
+			a.cderog02,
+			a.cderog05,
+			a.dem02 AS age,
+			a.dem05 AS LOR,
+			a.derogind01,
+			a.derogind02,
+			a.derogind07,
+			a.derogind08,
+			a.ed,
+			a.equity06,
+			a.equity14,
+			a.hderog06,
+			a.hderog20,
+			a.hhderog,
+			a.homebuildyear,
+			a.income,
+			a.inq01,
+			a.instal16 AS install6,
+			a.instal26,
+			a.lendername1,
+			a.lendername3,
+			a.MtgClosed,
+			a.maritalstat,
+			a.mtg09,
+			a.mtg11,
+			a.mtg14,
+			a.mtg26,
+			a.mtg35,
+			a.mtg40,
+			a.mtg42,
+			a.mtg63,
+			a.mtg65,
+			a.prm02 AS Mkt_Value,
+			a.LTV,
+			a.pr01,
+			a.pr02,
+			a.pr22,
+			a.pr24,
+			a.pr26,
+			a.pr27,
+			a.pr35,
+			a.pr36,
+			a.pr39,
+			a.pr40,
+			a.pr78,
+			a.pr84,
+			a.rev03,
+			a.rev06,
+			a.rev13,
+			a.rev18,
+			a.rev23,
+			a.rev24,
+			a.rev42,
+			a.xfc01 as fcra1,
+			a.xfc02 as fcra2,
+			a.xfc03 as fcra3,
+			a.xfc04 as fcra4,
+			a.xfc05 as fcra5,
+			a.xfc06 as fcra6,
+			a.xfc07 as fcra7,
+			a.hhid,
+			a.dwel_type as dwe_type,
+			a.apt_flag,
+			a.all24,
+			a.fannie,
+			a.freddie,
+			a.gseprospect,
+			a.hh_flag,
+			a.hisp_flag,
+			a.hisp_surname,
+			a.mtg_loantype,
+			a.mtg_lenderselect,
+			a.mtg_rate,
+			a.mtg_ratetype,
+			a.mtg_term,
+			a.negam_flag,
+			a.prop_insight,
+			a.phone_flag,
+			a.prop_type,
+			a.amg19 AS mtg19,
+			a.amg32 AS mtg31,
+			a.amg34 AS mtg33,
+			a.mtg25,
+			a.mtg66,
+			a.mtg69,
+			a.he_amount,
+			a.he_date,
+			a.mtg67,
+			a.mtg68,
+			a.purchamt,
+			a.DateMailed,
+			a.DropNumber,
+			a.Offer,
+			a.PostCard AS Campaign,
+			a.Segment,
+			a.Terms AS Term,
+			a.Years,
+			a.Months,
+			a.GoodThruDate,
+			a.Ltv AS Calculation1,
+			a.InterestRate AS InterestRatePrinted,
+			a.Apr AS AprPrinted,
+			a.Fha AS CountyMax,
+			a.Dti as Calculation2,
+			a.Payment1000 as Calculation3,
+			a.Payment as Calculation4,
+			a.LTVCashOut as Calculation5,
+			a.Image as LoanAmountPrinted,
+			a.CallNumber,
+			a.RedirectNumber,
+			a.PreApprovalDateBack as PreApprovalDate,
+			a.HoursBack as Hours,
+			a.LicenseLong as StateLicense,
+			a.Veteran_HH_Flag,
+			a.RecordType,
+			CASE WHEN UPPER(a.Offer) LIKE 'FD^_%' ESCAPE '^' THEN 0 ELSE 1 END as ACQUISITION,
+			CASE WHEN UPPER(a.PostCard) LIKE '%ITA%' THEN 1 ELSE 0 END as ITA,
+			CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL  AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=60)) THEN 1 ELSE 0 END as Gate60,
+			CASE WHEN g.ApplicationDate IS NOT NULL AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=60))THEN 1 ELSE 0 END as Application60,
+			CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=60))THEN 1 ELSE 0 END as Fund60,
+			CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL  AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=90  )) THEN 1 ELSE 0 END as Gate90,
+			CASE WHEN g.ApplicationDate IS NOT NULL AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=90))THEN 1 ELSE 0 END as Application90,
+			CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) AND (g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE), g.ApplicationDate)<=90))THEN 1 ELSE 0 END as Fund90,
+			CASE WHEN g.INITIAL_DISCLOSURE_COMPLETE IS NOT NULL THEN 1 ELSE 0 END as Gate90plus,
+			CASE WHEN g.ApplicationDate IS NOT NULL THEN 1 ELSE 0 END as Application90plus,
+			CASE WHEN UPPER(g.CurrentStatus) IN ('FUNDED BY INVESTOR', 'CLOSED/PURCHASED','DELIVERED TO INVESTOR', 'FUNDED - FUNDS DISBURSED', 'LOAN PAID OFF','CLOSED - CLOSING CONFIRMED', 'NOTE VALIDATED', 'NOTE VALIDATED REVERSAL') OR (ClosingDate IS NOT NULL AND ((StatusNum BETWEEN 59 AND 95) OR (StatusNum BETWEEN 160 AND 170))) THEN 1 ELSE 0 END as Fund90plus,
+			CASE WHEN (g.StatusNum BETWEEN 11 AND 57) AND (g.StatusNum != 55) THEN 1 ELSE 0 END as Active,
+			NULLIF(SUBSTRING(a.Offer, 1, 4),'') AS Program,
+			NULLIF(SUBSTRING(a.Offer, 7, 3),'') AS Creative,
+			NULLIF(SUBSTRING(a.Offer, 5, 2),'') AS Product,
+			NULLIF(SUBSTRING(a.Offer, 10, 7),'') as Version,
+			CASE WHEN g.matchtype=1 OR (g.matchtype!=1 AND DATEDIFF(d,CAST(a.DateMailed AS DATE),g.ApplicationDate)<=60) THEN 1 ELSE 0 END  as LessthanSixty,
+			CASE WHEN d.ResNum IS NOT NULL THEN 1 ELSE 0 END as BilledResponse,
+			CASE WHEN d.ResNum IS NOT NULL THEN TotalResponses ELSE 0 END as TotalResponses,
+			DATEDIFF(d, CAST(a.DateMailed AS DATE), g.ApplicationDate) as DaysLogic,
+			DATEDIFF(d, CAST(a.DateMailed AS DATE), d.ResponseDate) as DaysRespond,
+			DATEDIFF(d, d.ResponseDate, g.ApplicationDate) as DaysApplication,
+			DATEDIFF(d, g.ApplicationDate, g.ClosingDate) as DaysFunded,
+			a.Class
+	FROM 
+		dbo.RecordsMailed a
+	LEFT JOIN
+		dbo.RES_Ivr d ON a.ResNum = d.ResNum AND a.RecordType = d.ResponseType AND UPPER(d.billcode) = 'B'
+	LEFT JOIN 
+		(	SELECT
+				ResNum,
+				ResponseType AS RecordType,
+				matchtype,
+				LoanAmount,
+				CurrentStatus,
+				StatusNum,
+				CAST(SUBSTRING(ApplicationDate,6,4) AS INT) AS ApplicationYear,
+				CASE WHEN ApplicationDate = '' THEN NULL ELSE CAST(LEFT(ApplicationDate,2)||'-'||SUBSTRING(ApplicationDate,3,3)||'-'||SUBSTRING(ApplicationDate,6,4) AS DATE) END AS ApplicationDate,
+				CASE WHEN ClosingDate = '' THEN NULL ELSE CAST(LEFT(ClosingDate,2)||'-'||SUBSTRING(ClosingDate,3,3)||'-'||SUBSTRING(ClosingDate,6,4) AS DATE) END AS ClosingDate,
+                                CASE WHEN INITIAL_DISCLOSURE_COMPLETE IN ('.','') THEN NULL ELSE
+                                        CAST(
+                                          CAST(LEFT(INITIAL_DISCLOSURE_COMPLETE,2)||'-'||SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,3,3)||'-'||SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,6,4) AS DATE)
+                                          ||' '||CAST(SUBSTRING(INITIAL_DISCLOSURE_COMPLETE,11,LENGTH(INITIAL_DISCLOSURE_COMPLETE)) AS TIME)
+                                         AS TIMESTAMP)
+                                END AS INITIAL_DISCLOSURE_COMPLETE,
+				LeadSource,
+				LeadId,
+                                CASE WHEN LeadDate = '' THEN NULL ELSE
+                                        CAST(
+                                          CAST(LEFT(LeadDate,2)||'-'||SUBSTRING(LeadDate,3,3)||'-'||SUBSTRING(LeadDate,6,4) AS DATE)
+                                          ||' '||CAST(SUBSTRING(LeadDate,11,LENGTH(LeadDate)) AS TIME)
+                                         AS TIMESTAMP)
+                                END AS LeadDate
+			FROM
+				dbo.Applications
+		) g on a.ResNum = g.ResNum AND a.RecordType = g.RecordType AND g.ApplicationYear >= 2015
+	LEFT JOIN 
+		(	SELECT 
+				ResNum, 
+				ResponseType AS RecordType, 
+				COUNT(1) as TotalResponses 
+			FROM 
+				dbo.RES_Ivr 
+			GROUP BY 
+				ResNum, 
+				ResponseType 
+		) e on a.ResNum = e.ResNum AND a.RecordType = e.RecordType
+	WHERE
+		a.DropNumber >= 2080
+		AND YEAR(CAST(a.DateMailed AS DATE)) >= 2015
+);
+"""
+cnx.cursor().execute(query)
+
+query = """GRANT SELECT ON ALL TABLES IN SCHEMA FREE_REPORTING.DBO TO ROLE PUBLIC;"""
+cnx.cursor().execute(query)
+
+query = """
+CREATE OR REPLACE TABLE DBO.FREEDOM_IMBTRACKING AS
+  SELECT 
+    a.DropNumber,
+    a.DateMailed,
+    a.ResNum AS RecordResnum,
+    a.Offer,
+    a.Campaign,
+    a.City,
+    a.State,
+    a.Zip,
+    a.ImbDigits AS RecordImbDigits,
+    b.*
+  FROM 
+    DBO.RECORDSMAILED a
+  LEFT JOIN 
+    DBO.SCN_Freedom b ON a.ImbDigits = b.ImbDigits AND a.ResNum = b.ResNum;
+"""
+cnx.cursor().execute(query)
+
+query = """GRANT SELECT ON ALL TABLES IN SCHEMA FREE_REPORTING.DBO TO ROLE PUBLIC;"""
+cnx.cursor().execute(query)
+
+query = """
+CREATE OR REPLACE TABLE DBO.FREEDOM_TBE_CURRENT_SCANS AS
+  SELECT 
+    a.*,
+    b.SCANID,
+    b.MAILERID,
+    b.SCANTIME,
+    b.FILENAME AS SCN_FILENAME,
+    b.FACILITYID,
+    b.OPERATIONCODE,
+    b.STOPTHECLOCK,
+    b.ESTDELIVERYDATE,
+    b.DATECREATED AS SCN_DATECREATED
+  FROM 
+    DBO.FREEDOM_TBE_CURRENT a
+  LEFT JOIN 
+    DBO.SCN_Freedom b ON a.ImbDigits = b.ImbDigits AND a.ResNum = b.ResNum
+  WHERE
+    a.DateMailed >= '2016-07-29';
+"""
+cnx.cursor().execute(query)
+
+query = """GRANT SELECT ON ALL TABLES IN SCHEMA FREE_REPORTING.DBO TO ROLE PUBLIC;"""
+cnx.cursor().execute(query)
